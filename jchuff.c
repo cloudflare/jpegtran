@@ -23,7 +23,9 @@
 #define JPEG_INTERNALS
 #include "jinclude.h"
 #include "jpeglib.h"
+
 #include <immintrin.h>
+
 
 /* The legal range of a DCT coefficient is
  *  -1024 .. +1023  for 8-bit data;
@@ -186,7 +188,7 @@ jpeg_make_c_derived_tbl (j_compress_ptr cinfo, boolean isDC, int tblno,
       (*cinfo->mem->alloc_small) ((j_common_ptr) cinfo, JPOOL_IMAGE,
 				  SIZEOF(c_derived_tbl));
   dtbl = *pdtbl;
-  
+
   /* Figure C.1: make table of Huffman code length for each symbol */
 
   p = 0;
@@ -199,7 +201,7 @@ jpeg_make_c_derived_tbl (j_compress_ptr cinfo, boolean isDC, int tblno,
   }
   huffsize[p] = 0;
   lastp = p;
-  
+
   /* Figure C.2: generate the codes themselves */
   /* We also validate that the counts represent a legal Huffman code tree. */
 
@@ -219,7 +221,7 @@ jpeg_make_c_derived_tbl (j_compress_ptr cinfo, boolean isDC, int tblno,
     code <<= 1;
     si++;
   }
-  
+
   /* Figure C.3: generate encoding tables */
   /* These are code and size indexed by symbol value */
 
@@ -631,12 +633,12 @@ encode_mcu_AC_first (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
   huff_entropy_ptr entropy = (huff_entropy_ptr) cinfo->entropy;
   const int * natural_order;
   JBLOCKROW block;
-  int temp, temp2;
-  int nbits;
-  int r, k;
+  register int temp, temp2;
+  register int nbits;
+  register int r, k;
   int Se, Al;
-  int t1[DCTSIZE2];
-  int t2[DCTSIZE2];
+  short t1[DCTSIZE2];
+  short t2[DCTSIZE2];
 
   entropy->next_output_byte = cinfo->dest->next_output_byte;
   entropy->free_in_buffer = cinfo->dest->free_in_buffer;
@@ -652,90 +654,73 @@ encode_mcu_AC_first (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
 
   /* Encode the MCU data block */
   block = MCU_data[0];
-
   /* Encode the AC coefficients per section G.1.2.2, fig. G.3 */
-  
   r = 0;			/* r = run length of zeros */
-#ifdef __AVX2__ 
-  __m256i zero = _mm256_setzero_si256();
-  for (k = cinfo->Ss; k <= (Se-7); k+=8) {
-    __m128i bottom = _mm_cvtsi32_si128((*block)[natural_order[k]]);
-    __m128i top = _mm_cvtsi32_si128((*block)[natural_order[k+4]]);
-    bottom = _mm_insert_epi32(bottom, (*block)[natural_order[k+1]], 1);
-    bottom = _mm_insert_epi32(bottom, (*block)[natural_order[k+2]], 2);
-    bottom = _mm_insert_epi32(bottom, (*block)[natural_order[k+3]], 3);
-    top = _mm_insert_epi32(top, (*block)[natural_order[k+5]], 1);
-    top = _mm_insert_epi32(top, (*block)[natural_order[k+6]], 2);
-    top = _mm_insert_epi32(top, (*block)[natural_order[k+7]], 3);
+  for (k = cinfo->Ss; k <= (Se-7);) {
+    __m128i top = _mm_setzero_si128();
+    __m128i bottom = _mm_cvtsi32_si128((*block)[natural_order[k+0]]);
+    top = _mm_insert_epi16(top, (*block)[natural_order[k+4]], 4);
+    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+1]], 1);
+    top = _mm_insert_epi16(top, (*block)[natural_order[k+5]], 5);
+    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+2]], 2);
+    top = _mm_insert_epi16(top, (*block)[natural_order[k+6]], 6);
+    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+3]], 3);
+    top = _mm_insert_epi16(top, (*block)[natural_order[k+7]], 7);
 
-    __m256i x1 = _mm256_castsi128_si256(bottom);
-    x1 = _mm256_inserti128_si256 (x1, top, 1);
-    __m256i neg = _mm256_cmpgt_epi32(zero, x1);
-    x1 = _mm256_abs_epi32(x1);
-    x1 = _mm256_srli_epi32(x1, Al);
-    __m256i x2 = _mm256_andnot_si256(x1, neg);
-    x2 = _mm256_xor_si256(x2, _mm256_andnot_si256(neg, x1));
-
-    _mm256_storeu_si256((__m256i*)&t1[k], x1);
-    _mm256_storeu_si256((__m256i*)&t2[k], x2);
-  }
-#else 
-  __m128i zero = _mm_setzero_si128();
-  for (k = cinfo->Ss; k <= (Se-3); k+=4) {
-    __m128i x1 = _mm_cvtsi32_si128((*block)[natural_order[k]]);
-    x1 = _mm_insert_epi32(x1, (*block)[natural_order[k+1]], 1);
-    x1 = _mm_insert_epi32(x1, (*block)[natural_order[k+2]], 2);
-    x1 = _mm_insert_epi32(x1, (*block)[natural_order[k+3]], 3);
-    __m128i neg = _mm_cmpgt_epi32(zero, x1);
-    x1 = _mm_abs_epi32(x1);
-    x1 = _mm_srli_epi32(x1, Al);
+    __m128i x1 = _mm_xor_si128(top, bottom);
+    __m128i neg = _mm_cmpgt_epi16(_mm_setzero_si128(), x1);
+    x1 = _mm_abs_epi16(x1);
+    x1 = _mm_srli_epi16(x1, Al);
     __m128i x2 = _mm_andnot_si128(x1, neg);
     x2 = _mm_xor_si128(x2, _mm_andnot_si128(neg, x1));
+
     _mm_storeu_si128((__m128i*)&t1[k], x1);
     _mm_storeu_si128((__m128i*)&t2[k], x2);
+    k += 8;
+    k &= -8;
   }
-#endif
   for (; k <= Se; k++) {
     temp = (*block)[natural_order[k]];
     if (temp < 0) {
-      temp = -temp;		/* temp is abs value of input */
-      temp >>= Al;		/* apply the point transform */
+      temp = -temp;             /* temp is abs value of input */
+      temp >>= Al;              /* apply the point transform */
       temp2 = ~temp;
     } else {
-      temp >>= Al;		/* apply the point transform */
+      temp >>= Al;              /* apply the point transform */
       temp2 = temp;
     }
     t1[k] = temp;
     t2[k] = temp2;
   }
   for (k = cinfo->Ss; k <= Se;) {
-#ifdef __AVX2__ 
+#ifdef __AVX2__
     __m256i t = _mm256_loadu_si256((__m256i*)&t1[k]);
-    t = _mm256_cmpeq_epi32(t, zero);
+    t = _mm256_cmpeq_epi16(t, _mm256_setzero_si256());
     int idx = _mm256_movemask_epi8(t);
     if (idx == 0xffffffff) {
-        r+=8;
-        k+=8;
-        continue;
+      r+=16;
+      k+=16;
+      continue;
     } else {
-        r+=__builtin_ctz(~idx)/4;
-        k+=__builtin_ctz(~idx)/4;
-        if (k>Se) break;
+      r+=__builtin_ctz(~idx)/2;
+      k+=__builtin_ctz(~idx)/2;
+      if (k>Se) break;
     }
 #else
     __m128i t = _mm_loadu_si128((__m128i*)&t1[k]);
-    t = _mm_cmpeq_epi32(t, zero);
+    t = _mm_cmpeq_epi16(t, _mm_setzero_si128());
     int idx = _mm_movemask_epi8(t);
     if (idx == 0xffff) {
-        r+=4;
-        k+=4;
-        continue;
+      r+=8;
+      k+=8;
+      continue;
     } else {
-        r += __builtin_ctz(~idx)/4;
-        k += __builtin_ctz(~idx)/4;
-        if (k > Se) break;
+      r+=__builtin_ctz(~idx)/2;
+      k+=__builtin_ctz(~idx)/2;
+      if (k>Se) break;
     }
 #endif
+
     temp = t1[k];
     temp2 = t2[k];
 
@@ -749,9 +734,7 @@ encode_mcu_AC_first (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
     }
 
     /* Find the number of bits needed for the magnitude of the coefficient */
-    nbits = 1;			/* there must be at least one 1 bit */
-    while ((temp >>= 1))
-      nbits++;
+    nbits = 32 - __builtin_clz(temp);
     /* Check for out-of-range coefficient values */
     if (nbits > MAX_COEF_BITS)
       ERREXIT(cinfo, JERR_BAD_DCT_COEF);
@@ -846,12 +829,12 @@ encode_mcu_AC_refine (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
   const int * natural_order;
   JBLOCKROW block;
   int temp;
-  int r, k;
+  int r, k, j;
   int Se, Al;
   int EOB;
   char *BR_buffer;
   unsigned int BR;
-  int absvalues[DCTSIZE2];
+  short absvalues[DCTSIZE2];
 
   entropy->next_output_byte = cinfo->dest->next_output_byte;
   entropy->free_in_buffer = cinfo->dest->free_in_buffer;
@@ -872,49 +855,31 @@ encode_mcu_AC_refine (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
    * coefficients' absolute values and the EOB position.
    */
   EOB = 0;
-#ifdef __AVX2__ 
-  __m256i one = _mm256_set1_epi32(1);
-  __m256i zero = _mm256_setzero_si256();
-  /* Encode the AC coefficients per section G.1.2.3, fig. G.7 */
-  for (k = cinfo->Ss; k <= (Se-7); k+=8) {
-    __m128i bottom = _mm_cvtsi32_si128((*block)[natural_order[k]]);
-    __m128i top = _mm_cvtsi32_si128((*block)[natural_order[k+4]]);
-    bottom = _mm_insert_epi32(bottom, (*block)[natural_order[k+1]], 1);
-    bottom = _mm_insert_epi32(bottom, (*block)[natural_order[k+2]], 2);
-    bottom = _mm_insert_epi32(bottom, (*block)[natural_order[k+3]], 3);
-    top = _mm_insert_epi32(top, (*block)[natural_order[k+5]], 1);
-    top = _mm_insert_epi32(top, (*block)[natural_order[k+6]], 2);
-    top = _mm_insert_epi32(top, (*block)[natural_order[k+7]], 3);
-    __m256i x1 = _mm256_castsi128_si256(bottom);
-    x1 = _mm256_inserti128_si256 (x1, top, 1);
+  __m128i one = _mm_set1_epi16(1);
+  for (k = cinfo->Ss; k <= (Se-7);) {
+    __m128i top = _mm_setzero_si128();
+    __m128i bottom = _mm_cvtsi32_si128((*block)[natural_order[k+0]]);
+    top = _mm_insert_epi16(top, (*block)[natural_order[k+4]], 4);
+    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+1]], 1);
+    top = _mm_insert_epi16(top, (*block)[natural_order[k+5]], 5);
+    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+2]], 2);
+    top = _mm_insert_epi16(top, (*block)[natural_order[k+6]], 6);
+    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+3]], 3);
+    top = _mm_insert_epi16(top, (*block)[natural_order[k+7]], 7);
 
-    x1 = _mm256_abs_epi32(x1);
-    x1 = _mm256_srli_epi32(x1, Al);
-    _mm256_storeu_si256((__m256i*)&absvalues[k], x1);
-    x1 = _mm256_cmpeq_epi32(x1, one);
-    int idx = _mm256_movemask_epi8(x1);
-    if (idx) {
-      EOB = k + (32 - __builtin_clz(idx))/4;
-    }
-  }
-#else
-  __m128i one = _mm_set1_epi32(1);
-  __m128i zero = _mm_setzero_si128();
-  for (k = cinfo->Ss; k <= (Se-3); k += 4) {
-    __m128i x1 = _mm_cvtsi32_si128((*block)[natural_order[k]]);
-    x1 = _mm_insert_epi32(x1, (*block)[natural_order[k+1]], 1);
-    x1 = _mm_insert_epi32(x1, (*block)[natural_order[k+2]], 2);
-    x1 = _mm_insert_epi32(x1, (*block)[natural_order[k+3]], 3);
-    x1 = _mm_abs_epi32(x1);
-    x1 = _mm_srli_epi32(x1, Al);
+    __m128i x1 = _mm_xor_si128(top, bottom);
+    x1 = _mm_abs_epi16(x1);
+    x1 = _mm_srli_epi16(x1, Al);
     _mm_storeu_si128((__m128i*)&absvalues[k], x1);
-    x1 = _mm_cmpeq_epi32(x1, one);
-    int idx = _mm_movemask_epi8(x1);
-    if (idx) {
-      EOB = k + (32 - __builtin_clz(idx))/4;
-    }
+    x1 = _mm_cmpeq_epi16(x1, one);
+    unsigned int idx = _mm_movemask_epi8(x1);
+
+    EOB = idx? k + 16 - __builtin_clz(idx)/2 : EOB;
+
+    k += 8;
+    k &= -8;
   }
-#endif
+  /* We should rarly get to this loop */
   for (; k <= Se; k++) {
     temp = (*block)[natural_order[k]];
     /* We must apply the point transform by Al.  For AC coefficients this
@@ -922,45 +887,48 @@ encode_mcu_AC_refine (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
      * in C, we shift after obtaining the absolute value.
      */
     if (temp < 0)
-      temp = -temp;		/* temp is abs value of input */
-    temp >>= Al;		/* apply the point transform */
-    absvalues[k] = temp;	/* save abs value for main pass */
+      temp = -temp;             /* temp is abs value of input */
+    temp >>= Al;                /* apply the point transform */
+    absvalues[k] = temp;        /* save abs value for main pass */
     if (temp == 1)
-      EOB = k;			/* EOB = index of last newly-nonzero coef */
+      EOB = k;                  /* EOB = index of last newly-nonzero coef */
   }
+
+  /* Encode the AC coefficients per section G.1.2.3, fig. G.7 */
+
   r = 0;			/* r = run length of zeros */
   BR = 0;			/* BR = count of buffered bits added now */
   BR_buffer = entropy->bit_buffer + entropy->BE; /* Append bits to buffer */
+
   for (k = cinfo->Ss; k <= Se;) {
-#ifdef __AVX2__ 
+#ifdef __AVX2__
     __m256i t = _mm256_loadu_si256((__m256i*)&absvalues[k]);
-    t = _mm256_cmpeq_epi32(t, zero);
+    t = _mm256_cmpeq_epi16(t, _mm256_setzero_si256());
     int idx = _mm256_movemask_epi8(t);
     if (idx == 0xffffffff) {
-      r+=8;
-      k+=8;
+      r+=16;
+      k+=16;
       continue;
     } else {
-      r+=__builtin_ctz(~idx)/4;
-      k+=__builtin_ctz(~idx)/4;
+      r+=__builtin_ctz(~idx)/2;
+      k+=__builtin_ctz(~idx)/2;
       if (k>Se) break;
     }
 #else
     __m128i t = _mm_loadu_si128((__m128i*)&absvalues[k]);
-    t = _mm_cmpeq_epi32(t, zero);
+    t = _mm_cmpeq_epi16(t, _mm_setzero_si128());
     int idx = _mm_movemask_epi8(t);
     if (idx == 0xffff) {
-        r+=4;
-        k+=4;
-        continue;
+      r+=8;
+      k+=8;
+      continue;
     } else {
-        r += __builtin_ctz(~idx)/4;
-        k += __builtin_ctz(~idx)/4;
-        if (k > Se) break;
+      r+=__builtin_ctz(~idx)/2;
+      k+=__builtin_ctz(~idx)/2;
+      if (k>Se) break;
     }
 #endif
     temp = absvalues[k];
-
     /* Emit any required ZRLs, but not if they can be folded into EOB */
     while (r > 15 && k <= EOB) {
       /* emit any pending EOBRUN and the BE correction bits */
@@ -1391,7 +1359,7 @@ jpeg_gen_optimal_table (j_compress_ptr cinfo, JHUFF_TBL * htbl, long freq[])
   MEMZERO(codesize, SIZEOF(codesize));
   for (i = 0; i < 257; i++)
     others[i] = -1;		/* init links to empty */
-  
+
   freq[256] = 1;		/* make sure 256 has a nonzero count */
   /* Including the pseudo-symbol 256 in the Huffman procedure guarantees
    * that no real symbol is given code-value of all ones, because 256
@@ -1426,7 +1394,7 @@ jpeg_gen_optimal_table (j_compress_ptr cinfo, JHUFF_TBL * htbl, long freq[])
     /* Done if we've merged everything into one frequency */
     if (c2 < 0)
       break;
-    
+
     /* Else merge the two counts/trees */
     freq[c1] += freq[c2];
     freq[c2] = 0;
@@ -1437,9 +1405,9 @@ jpeg_gen_optimal_table (j_compress_ptr cinfo, JHUFF_TBL * htbl, long freq[])
       c1 = others[c1];
       codesize[c1]++;
     }
-    
+
     others[c1] = c2;		/* chain c2 onto c1's tree branch */
-    
+
     /* Increment the codesize of everything in c2's tree branch */
     codesize[c2]++;
     while (others[c2] >= 0) {
@@ -1470,13 +1438,13 @@ jpeg_gen_optimal_table (j_compress_ptr cinfo, JHUFF_TBL * htbl, long freq[])
    * shortest nonzero BITS entry is converted into a prefix for two code words
    * one bit longer.
    */
-  
+
   for (i = MAX_CLEN; i > 16; i--) {
     while (bits[i] > 0) {
       j = i - 2;		/* find length of new prefix to be used */
       while (bits[j] == 0)
 	j--;
-      
+
       bits[i] -= 2;		/* remove two symbols */
       bits[i-1]++;		/* one goes in this length */
       bits[j+1] += 2;		/* two new symbols in this length */
@@ -1488,10 +1456,10 @@ jpeg_gen_optimal_table (j_compress_ptr cinfo, JHUFF_TBL * htbl, long freq[])
   while (bits[i] == 0)		/* find largest codelength still in use */
     i--;
   bits[i]--;
-  
+
   /* Return final symbol counts (only for lengths 0..16) */
   MEMCOPY(htbl->bits, bits, SIZEOF(htbl->bits));
-  
+
   /* Return a list of the symbols sorted by code length */
   /* It's not real clear to me why we don't need to consider the codelength
    * changes made above, but the JPEG spec seems to think this works.
