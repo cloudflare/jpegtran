@@ -24,8 +24,25 @@
 #include "jinclude.h"
 #include "jpeglib.h"
 
+#ifdef USE_SSE
+
+#include <stdint.h>
 #include <immintrin.h>
 
+#elif defined USE_NEON
+
+#include <arm_neon.h>
+
+typedef struct {
+  uint64_t EOB;
+  uint64_t Z_MASK;
+} two_ret;
+
+uint64_t AC_first_util_64(const short *block, const int *natural_order, short *t0, short *t1, int al);
+uint64_t AC_first_util_16(const short *block, const int *natural_order, short *t0, short *t1, int al);
+two_ret AC_refine_util_64(const short *block, const int *natural_order, short *res, int Al);
+
+#endif
 
 /* The legal range of a DCT coefficient is
  *  -1024 .. +1023  for 8-bit data;
@@ -633,9 +650,9 @@ encode_mcu_AC_first (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
   huff_entropy_ptr entropy = (huff_entropy_ptr) cinfo->entropy;
   const int * natural_order;
   JBLOCKROW block;
-  register int temp, temp2;
-  register int nbits;
-  register int r, k;
+  int temp, temp2;
+  int nbits;
+  int r, k;
   int Se, Al;
   short t1[DCTSIZE2];
   short t2[DCTSIZE2];
@@ -656,29 +673,76 @@ encode_mcu_AC_first (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
   block = MCU_data[0];
   /* Encode the AC coefficients per section G.1.2.2, fig. G.3 */
   r = 0;			/* r = run length of zeros */
-  for (k = cinfo->Ss; k <= (Se-7);) {
-    __m128i top = _mm_setzero_si128();
-    __m128i bottom = _mm_cvtsi32_si128((*block)[natural_order[k+0]]);
-    top = _mm_insert_epi16(top, (*block)[natural_order[k+4]], 4);
-    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+1]], 1);
-    top = _mm_insert_epi16(top, (*block)[natural_order[k+5]], 5);
-    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+2]], 2);
-    top = _mm_insert_epi16(top, (*block)[natural_order[k+6]], 6);
-    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+3]], 3);
-    top = _mm_insert_epi16(top, (*block)[natural_order[k+7]], 7);
 
-    __m128i x1 = _mm_xor_si128(top, bottom);
-    __m128i neg = _mm_cmpgt_epi16(_mm_setzero_si128(), x1);
-    x1 = _mm_abs_epi16(x1);
-    x1 = _mm_srli_epi16(x1, Al);
-    __m128i x2 = _mm_andnot_si128(x1, neg);
-    x2 = _mm_xor_si128(x2, _mm_andnot_si128(neg, x1));
+#ifdef USE_NEON
+  uint64_t zero_mask;
+  if (Se >= 48) {
 
-    _mm_storeu_si128((__m128i*)&t1[k], x1);
-    _mm_storeu_si128((__m128i*)&t2[k], x2);
+    zero_mask = AC_first_util_64(*block, natural_order, t1, t2, Al);
+
+  } else {
+
+  int16x8_t zero = vdupq_n_s16(0);
+  int16x8_t al_neon = vdupq_n_s16(-Al);
+
+#endif
+
+  for (k = cinfo->Ss; k < Se;) {
+
+#ifdef USE_NEON
+
+    int16x8_t x0 = zero;
+    int16x8_t x1 = zero;
+
+    x1 = vsetq_lane_s16((*block)[natural_order[k+0]], x1, 0);  // Load 8 16-bit values sequentially
+    x0 = vsetq_lane_s16((*block)[natural_order[k+1]], x0, 1);  // Interleave the loads to compensate for latency
+    x1 = vsetq_lane_s16((*block)[natural_order[k+2]], x1, 2);
+    x0 = vsetq_lane_s16((*block)[natural_order[k+3]], x0, 3);
+    x1 = vsetq_lane_s16((*block)[natural_order[k+4]], x1, 4);
+    x0 = vsetq_lane_s16((*block)[natural_order[k+5]], x0, 5);
+    x1 = vsetq_lane_s16((*block)[natural_order[k+6]], x1, 6);
+    x0 = vsetq_lane_s16((*block)[natural_order[k+7]], x0, 7);
+    int16x8_t x = vorrq_s16(x1, x0);
+
+    uint16x8_t is_positive = vcgezq_s16(x);
+    x = vabsq_s16(x);          // Get absolute value of 16-bit integers
+    x = vshlq_s16(x, al_neon); // >> 16-bit integers by Al bits
+
+    int16x8_t n = vmvnq_s16(x);
+
+    n = vbslq_s16(is_positive, x, n);
+
+    vst1q_s16(&t1[k], x); // Store
+    vst1q_s16(&t2[k], n); // Store
+
+#elif defined USE_SSE
+
+    __m128i x0 = _mm_setzero_si128();
+    __m128i x1 = _mm_cvtsi32_si128((*block)[natural_order[k+0]]);
+    x0 = _mm_insert_epi16(x0, (*block)[natural_order[k+4]], 4);
+    x1 = _mm_insert_epi16(x1, (*block)[natural_order[k+1]], 1);
+    x0 = _mm_insert_epi16(x0, (*block)[natural_order[k+5]], 5);
+    x1 = _mm_insert_epi16(x1, (*block)[natural_order[k+2]], 2);
+    x0 = _mm_insert_epi16(x0, (*block)[natural_order[k+6]], 6);
+    x1 = _mm_insert_epi16(x1, (*block)[natural_order[k+3]], 3);
+    x0 = _mm_insert_epi16(x0, (*block)[natural_order[k+7]], 7);
+
+    __m128i x = _mm_xor_si128(x0, x1);
+    __m128i neg = _mm_cmpgt_epi16(_mm_setzero_si128(), x);
+    x = _mm_abs_epi16(x);
+    x = _mm_srli_epi16(x, Al);
+    __m128i n = _mm_andnot_si128(x, neg);
+    n = _mm_xor_si128(n, _mm_andnot_si128(neg, x));
+
+    _mm_storeu_si128((__m128i*)&t1[k], x);
+    _mm_storeu_si128((__m128i*)&t2[k], n);
+
+#endif
+
     k += 8;
     k &= -8;
   }
+
   for (; k <= Se; k++) {
     temp = (*block)[natural_order[k]];
     if (temp < 0) {
@@ -692,34 +756,34 @@ encode_mcu_AC_first (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
     t1[k] = temp;
     t2[k] = temp2;
   }
-  for (k = cinfo->Ss; k <= Se;) {
-#ifdef __AVX2__
-    __m256i t = _mm256_loadu_si256((__m256i*)&t1[k]);
-    t = _mm256_cmpeq_epi16(t, _mm256_setzero_si256());
-    int idx = _mm256_movemask_epi8(t);
-    if (idx == 0xffffffff) {
-      r+=16;
-      k+=16;
-      continue;
-    } else {
-      r+=__builtin_ctz(~idx)/2;
-      k+=__builtin_ctz(~idx)/2;
-      if (k>Se) break;
-    }
-#else
-    __m128i t = _mm_loadu_si128((__m128i*)&t1[k]);
-    t = _mm_cmpeq_epi16(t, _mm_setzero_si128());
-    int idx = _mm_movemask_epi8(t);
-    if (idx == 0xffff) {
-      r+=8;
-      k+=8;
-      continue;
-    } else {
-      r+=__builtin_ctz(~idx)/2;
-      k+=__builtin_ctz(~idx)/2;
-      if (k>Se) break;
-    }
+
+#ifdef USE_NEON
+  }
 #endif
+
+  for (k = cinfo->Ss; k <= Se;) {
+
+#ifdef USE_NEON
+    if (Se >= 48) {
+      uint64_t kk =__builtin_clzl(zero_mask << k);
+      r += kk;
+      k += kk;
+      if (k>Se) {
+        int tail = k - (Se + 1);
+        k -= tail;
+        r -= tail;
+        break;
+      }
+    } else
+#endif
+    {
+      uint64_t tt, *t = (uint64_t*)&t1[k];
+      if ( (tt = *t) == 0) while ( (tt = *++t) == 0);
+      int skip = __builtin_ctzl(tt)/16 + ((int64_t)t - (int64_t)&t1[k])/2;
+      k += skip;
+      r += skip;
+      if (k > Se) break;
+    }
 
     temp = t1[k];
     temp2 = t2[k];
@@ -854,32 +918,82 @@ encode_mcu_AC_refine (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
   /* It is convenient to make a pre-pass to determine the transformed
    * coefficients' absolute values and the EOB position.
    */
-  EOB = 0;
-  __m128i one = _mm_set1_epi16(1);
-  for (k = cinfo->Ss; k <= (Se-7);) {
-    __m128i top = _mm_setzero_si128();
-    __m128i bottom = _mm_cvtsi32_si128((*block)[natural_order[k+0]]);
-    top = _mm_insert_epi16(top, (*block)[natural_order[k+4]], 4);
-    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+1]], 1);
-    top = _mm_insert_epi16(top, (*block)[natural_order[k+5]], 5);
-    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+2]], 2);
-    top = _mm_insert_epi16(top, (*block)[natural_order[k+6]], 6);
-    bottom = _mm_insert_epi16(bottom, (*block)[natural_order[k+3]], 3);
-    top = _mm_insert_epi16(top, (*block)[natural_order[k+7]], 7);
 
-    __m128i x1 = _mm_xor_si128(top, bottom);
-    x1 = _mm_abs_epi16(x1);
-    x1 = _mm_srli_epi16(x1, Al);
-    _mm_storeu_si128((__m128i*)&absvalues[k], x1);
-    x1 = _mm_cmpeq_epi16(x1, one);
-    unsigned int idx = _mm_movemask_epi8(x1);
+  EOB = 0;
+
+  uint64_t zero_mask;
+
+#ifdef USE_NEON
+  if (Se >= 48) {
+
+    two_ret ret  = AC_refine_util_64(*block, natural_order, absvalues, Al);
+    EOB = ret.EOB;
+    zero_mask = ret.Z_MASK;
+
+  } else {
+
+  int16x8_t one = vdupq_n_s16(1);
+  int16x8_t zero = vdupq_n_s16(0);
+  int16x8_t al_neon = vdupq_n_s16(-Al);
+
+#endif
+
+  for (k = cinfo->Ss; k < Se;) {
+
+#ifdef USE_NEON
+
+    int16x8_t x0 = zero;
+    int16x8_t x1 = zero;
+
+    x1 = vsetq_lane_s16((*block)[natural_order[k+0]], x1, 0);
+    x0 = vsetq_lane_s16((*block)[natural_order[k+1]], x0, 1);
+    x1 = vsetq_lane_s16((*block)[natural_order[k+2]], x1, 2);
+    x0 = vsetq_lane_s16((*block)[natural_order[k+3]], x0, 3);
+    x1 = vsetq_lane_s16((*block)[natural_order[k+4]], x1, 4);
+    x0 = vsetq_lane_s16((*block)[natural_order[k+5]], x0, 5);
+    x1 = vsetq_lane_s16((*block)[natural_order[k+6]], x1, 6);
+    x0 = vsetq_lane_s16((*block)[natural_order[k+7]], x0, 7);
+
+    int16x8_t x = vorrq_s16(x1, x0);
+    x = vabsq_s16(x);
+    x = vshlq_s16(x, al_neon);
+
+    vst1q_s16(&absvalues[k], x);
+
+    uint8x16_t is_one = vreinterpretq_u8_u16(vceqq_s16(x, one));
+    is_one = vuzp1q_u8(is_one, is_one);
+
+    uint64_t idx = vgetq_lane_u64(vreinterpretq_u64_u8(is_one), 0);
+    EOB = idx ? k + 8 - __builtin_clzl(idx)/8 : EOB;
+
+#elif defined USE_SSE
+
+    __m128i x1 = _mm_setzero_si128();
+    __m128i x0 = _mm_cvtsi32_si128((*block)[natural_order[k+0]]);
+    x1 = _mm_insert_epi16(x1, (*block)[natural_order[k+4]], 4);
+    x0 = _mm_insert_epi16(x0, (*block)[natural_order[k+1]], 1);
+    x1 = _mm_insert_epi16(x1, (*block)[natural_order[k+5]], 5);
+    x0 = _mm_insert_epi16(x0, (*block)[natural_order[k+2]], 2);
+    x1 = _mm_insert_epi16(x1, (*block)[natural_order[k+6]], 6);
+    x0 = _mm_insert_epi16(x0, (*block)[natural_order[k+3]], 3);
+    x1 = _mm_insert_epi16(x1, (*block)[natural_order[k+7]], 7);
+
+    __m128i x = _mm_xor_si128(x1, x0);
+    x = _mm_abs_epi16(x);
+    x = _mm_srli_epi16(x, Al);
+    _mm_storeu_si128((__m128i*)&absvalues[k], x);
+    x = _mm_cmpeq_epi16(x, _mm_set1_epi16(1));
+    unsigned int idx = _mm_movemask_epi8(x);
 
     EOB = idx? k + 16 - __builtin_clz(idx)/2 : EOB;
+
+#endif
 
     k += 8;
     k &= -8;
   }
-  /* We should rarly get to this loop */
+
+  /* We should not get to this loop */
   for (; k <= Se; k++) {
     temp = (*block)[natural_order[k]];
     /* We must apply the point transform by Al.  For AC coefficients this
@@ -894,41 +1008,41 @@ encode_mcu_AC_refine (j_compress_ptr cinfo, JBLOCKROW *MCU_data)
       EOB = k;                  /* EOB = index of last newly-nonzero coef */
   }
 
-  /* Encode the AC coefficients per section G.1.2.3, fig. G.7 */
+#ifdef USE_NEON
+  }
+#endif
 
+  /* Encode the AC coefficients per section G.1.2.3, fig. G.7 */
   r = 0;			/* r = run length of zeros */
   BR = 0;			/* BR = count of buffered bits added now */
   BR_buffer = entropy->bit_buffer + entropy->BE; /* Append bits to buffer */
 
   for (k = cinfo->Ss; k <= Se;) {
-#ifdef __AVX2__
-    __m256i t = _mm256_loadu_si256((__m256i*)&absvalues[k]);
-    t = _mm256_cmpeq_epi16(t, _mm256_setzero_si256());
-    int idx = _mm256_movemask_epi8(t);
-    if (idx == 0xffffffff) {
-      r+=16;
-      k+=16;
-      continue;
-    } else {
-      r+=__builtin_ctz(~idx)/2;
-      k+=__builtin_ctz(~idx)/2;
-      if (k>Se) break;
-    }
-#else
-    __m128i t = _mm_loadu_si128((__m128i*)&absvalues[k]);
-    t = _mm_cmpeq_epi16(t, _mm_setzero_si128());
-    int idx = _mm_movemask_epi8(t);
-    if (idx == 0xffff) {
-      r+=8;
-      k+=8;
-      continue;
-    } else {
-      r+=__builtin_ctz(~idx)/2;
-      k+=__builtin_ctz(~idx)/2;
-      if (k>Se) break;
-    }
+
+#ifdef USE_NEON
+    if (Se >= 48) {
+      uint64_t kk =__builtin_clzl(zero_mask << k);
+      r += kk;
+      k += kk;
+      if (k>Se) {
+        int tail = k - (Se + 1);
+        k -= tail;
+        r -= tail;
+        break;
+      }
+    } else
 #endif
+    {
+      uint64_t tt, *t = (uint64_t*)&absvalues[k];
+      if ( (tt = *t) == 0) while ( (tt = *++t) == 0);
+      int skip = __builtin_ctzl(tt)/16 + ((int64_t)t - (int64_t)&absvalues[k])/2;
+      k += skip;
+      r += skip;
+      if (k > Se) break;
+    }
+
     temp = absvalues[k];
+
     /* Emit any required ZRLs, but not if they can be folded into EOB */
     while (r > 15 && k <= EOB) {
       /* emit any pending EOBRUN and the BE correction bits */

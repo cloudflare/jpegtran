@@ -10,7 +10,7 @@ AC_INIT([libjpeg], [9.1.0])
 # Directory where autotools helper scripts lives.
 AC_CONFIG_AUX_DIR([.])
 
-# Generate configuration headers.
+# Generate configuration neaders.
 AC_CONFIG_HEADERS([jconfig.h:jconfig.cfg])
 
 # Hack: disable autoheader so that it doesn't overwrite our cfg template.
@@ -28,6 +28,41 @@ AM_INIT_AUTOMAKE([-Wall -Werror no-dist foreign])
 # with --disable-silent-rules or use "make V=1".
 AM_SILENT_RULES([yes])
 
+AC_DEFUN([AX_APPEND_FLAG],
+[dnl
+AC_PREREQ(2.64)dnl for _AC_LANG_PREFIX and AS_VAR_SET_IF
+AS_VAR_PUSHDEF([FLAGS], [m4_default($2,_AC_LANG_PREFIX[FLAGS])])
+AS_VAR_SET_IF(FLAGS,[
+  AS_CASE([" AS_VAR_GET(FLAGS) "],
+    [*" $1 "*], [AC_RUN_LOG([: FLAGS already contains $1])],
+    [
+     AS_VAR_APPEND(FLAGS,[" $1"])
+     AC_RUN_LOG([: FLAGS="$FLAGS"])
+    ])
+  ],
+  [
+  AS_VAR_SET(FLAGS,[$1])
+  AC_RUN_LOG([: FLAGS="$FLAGS"])
+  ])
+AS_VAR_POPDEF([FLAGS])dnl
+])dnl AX_APPEND_FLAG
+
+AC_DEFUN([AX_CHECK_COMPILE_FLAG],
+[AC_PREREQ(2.64)dnl for _AC_LANG_PREFIX and AS_VAR_IF
+AS_VAR_PUSHDEF([CACHEVAR],[ax_cv_check_[]_AC_LANG_ABBREV[]flags_$4_$1])dnl
+AC_CACHE_CHECK([whether _AC_LANG compiler accepts $1], CACHEVAR, [
+  ax_check_save_flags=$[]_AC_LANG_PREFIX[]FLAGS
+  _AC_LANG_PREFIX[]FLAGS="$[]_AC_LANG_PREFIX[]FLAGS $4 $1"
+  AC_COMPILE_IFELSE([m4_default([$5],[AC_LANG_PROGRAM()])],
+    [AS_VAR_SET(CACHEVAR,[yes])],
+    [AS_VAR_SET(CACHEVAR,[no])])
+  _AC_LANG_PREFIX[]FLAGS=$ax_check_save_flags])
+AS_VAR_IF(CACHEVAR,yes,
+  [m4_default([$2], :)],
+  [m4_default([$3], :)])
+AS_VAR_POPDEF([CACHEVAR])dnl
+])dnl AX_CHECK_COMPILE_FLAGS
+
 # Add configure option --enable-maintainer-mode which enables
 # dependency checking and generation useful to package maintainers.
 # This is made an option to avoid confusing end users.
@@ -41,6 +76,7 @@ AC_PROG_INSTALL
 AC_PROG_MAKE_SET
 AC_PROG_LN_S
 AM_PROG_AR
+AM_PROG_AS
 
 # Check if LD supports linker scripts,
 # and define automake conditional HAVE_LD_VERSION_SCRIPT if so.
@@ -102,6 +138,14 @@ AC_CHECK_HEADERS([stddef.h stdlib.h locale.h])
 AC_CHECK_HEADER([string.h], [],
  [AC_DEFINE([NEED_BSD_STRINGS], [1],
             [Compiler has <strings.h> rather than standard <string.h>.])])
+
+AX_CHECK_COMPILE_FLAG([-msse4.2],
+  AC_CHECK_HEADER([immintrin.h],
+    AX_APPEND_FLAG([-DUSE_SSE -msse4.2])))
+
+AX_CHECK_COMPILE_FLAG([-march=armv8-a],
+  AC_CHECK_HEADER([arm_neon.h],
+    AX_APPEND_FLAG([-DUSE_NEON -march=armv8-a]) CCASFLAGS="-DUSE_NEON" ))
 
 # See whether type size_t is defined in any ANSI-standard places;
 # if not, perhaps it is defined in <sys/types.h>.

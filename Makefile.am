@@ -13,7 +13,7 @@ LIBSOURCES = jaricom.c jcapimin.c jcapistd.c jcarith.c jccoefct.c jccolor.c \
         jddctmgr.c jdhuff.c jdinput.c jdmainct.c jdmarker.c jdmaster.c \
         jdmerge.c jdpostct.c jdsample.c jdtrans.c jerror.c jfdctflt.c \
         jfdctfst.c jfdctint.c jidctflt.c jidctfst.c jidctint.c jquant1.c \
-        jquant2.c jutils.c jmemmgr.c @MEMORYMGR@.c
+        jquant2.c jutils.c jmemmgr.c jchuff_util_armv8.S @MEMORYMGR@.c
 
 # System dependent sources
 SYSDEPSOURCES = jmemansi.c jmemname.c jmemnobs.c jmemdos.c jmemmac.c
